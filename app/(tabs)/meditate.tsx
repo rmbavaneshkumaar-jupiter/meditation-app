@@ -1,8 +1,9 @@
 import { useAudio } from '@/contexts/AudioContext';
 import { COLORS } from '@/constants/meditation';
-import { Play, Square, Timer, Pause, ChevronDown } from 'lucide-react-native';
-import { StyleSheet, Text, View, TouchableOpacity, ScrollView } from 'react-native';
+import { Play, Square, Timer, Pause, ChevronDown, BatteryWarning } from 'lucide-react-native';
+import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Alert, Platform } from 'react-native';
 import { useEffect, useState } from 'react';
+import { requestIgnoreBatteryOptimizations } from '@/utils/BatteryOptimizationHelper';
 
 export default function MeditateScreen() {
   const { recordings, session, nextPlayTime, isPaused, pausedTimeRemaining, sessionEndTime, startSession, pauseSession, resumeSession, stopSession } = useAudio();
@@ -55,9 +56,29 @@ export default function MeditateScreen() {
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   };
 
-  const handleStart = () => {
+  const handleStart = async () => {
     if (selectedRecording) {
-      startSession(selectedRecording, intervalMinutes, sessionDuration);
+      if (Platform.OS === 'android') {
+        Alert.alert(
+          'Background Execution',
+          'To ensure the timer runs reliably when your screen is off, we recommend disabling battery optimizations.',
+          [
+            {
+              text: 'Optimization Settings',
+              onPress: () => {
+                requestIgnoreBatteryOptimizations();
+                startSession(selectedRecording, intervalMinutes, sessionDuration);
+              },
+            },
+            {
+              text: 'Start Anyway',
+              onPress: () => startSession(selectedRecording, intervalMinutes, sessionDuration),
+            },
+          ]
+        );
+      } else {
+        startSession(selectedRecording, intervalMinutes, sessionDuration);
+      }
     }
   };
 

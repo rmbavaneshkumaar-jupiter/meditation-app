@@ -2,7 +2,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import createContextHook from '@nkzw/create-context-hook';
 import { Audio } from 'expo-av';
 import { Asset } from 'expo-asset';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import * as Notifications from 'expo-notifications';
+import * as KeepAwake from 'expo-keep-awake';
+import { Platform } from 'react-native';
 import type { Recording, MeditationSession } from '@/types/audio';
 import { MAX_RECORDING_DURATION } from '@/constants/meditation';
 
@@ -21,10 +24,79 @@ export const [AudioProvider, useAudio] = createContextHook(() => {
   const [sessionEndTime, setSessionEndTime] = useState<number | null>(null);
   const [keepAliveSound, setKeepAliveSound] = useState<Audio.Sound | null>(null);
 
+  const notificationId = useRef<string | null>(null);
+  const timerInterval = useRef<any>(null);
+
   useEffect(() => {
     loadRecordings();
     setupAudio();
+    setupNotifications();
+    return () => {
+      stopNotificationUpdates();
+    };
   }, []);
+
+  const setupNotifications = async () => {
+    if (Platform.OS === 'android') {
+      await Notifications.setNotificationChannelAsync('meditation-timer', {
+        name: 'Meditation Timer',
+        importance: Notifications.AndroidImportance.HIGH,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#FF231F7C',
+      });
+    }
+
+    await Notifications.requestPermissionsAsync();
+  };
+
+  const updateNotification = async (remainingMs: number | null, isPaused: boolean = false) => {
+    const title = isPaused ? 'Meditation Paused' : 'Meditation in Progress';
+    let body = 'Finding your inner peace...';
+
+    if (remainingMs !== null) {
+      const minutes = Math.floor(remainingMs / 60000);
+      const seconds = Math.floor((remainingMs % 60000) / 1000);
+      body = `Remaining: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+    }
+
+    if (notificationId.current) {
+      await Notifications.dismissNotificationAsync(notificationId.current);
+    }
+
+    notificationId.current = await Notifications.scheduleNotificationAsync({
+      content: {
+        title,
+        body,
+        sticky: true,
+        autoDismiss: false,
+        color: '#6366f1',
+      },
+      trigger: null,
+    });
+  };
+
+  const startNotificationUpdates = (endTime: number | null) => {
+    stopNotificationUpdates();
+    timerInterval.current = setInterval(() => {
+      const remaining = endTime ? Math.max(0, endTime - Date.now()) : null;
+      updateNotification(remaining, false);
+    }, 5000); // Update every 5 seconds to be efficient but informative
+
+    // Immediate update
+    const remaining = endTime ? Math.max(0, endTime - Date.now()) : null;
+    updateNotification(remaining, false);
+  };
+
+  const stopNotificationUpdates = () => {
+    if (timerInterval.current) {
+      clearInterval(timerInterval.current);
+      timerInterval.current = null;
+    }
+    if (notificationId.current) {
+      Notifications.dismissNotificationAsync(notificationId.current);
+      notificationId.current = null;
+    }
+  };
 
   const setupAudio = async () => {
     await Audio.setAudioModeAsync({
@@ -240,6 +312,10 @@ export const [AudioProvider, useAudio] = createContextHook(() => {
         setNextPlayTime(null); // Om Chant is handled by didJustFinish
       }
       setSessionEndTime(endTime);
+
+      // Background & Screen-Off features
+      KeepAwake.activateKeepAwakeAsync();
+      startNotificationUpdates(endTime);
     } catch (error) {
       console.error('Failed to start session:', error);
     }
@@ -260,6 +336,12 @@ export const [AudioProvider, useAudio] = createContextHook(() => {
       setPausedTimeRemaining(prev => prev !== null ? prev : 0);
       setSession(prev => prev ? { ...prev, endTime: null, durationMinutes: remainingTime / (60 * 1000) } : null);
     }
+
+    updateNotification(pausedTimeRemaining, true);
+    if (timerInterval.current) {
+      clearInterval(timerInterval.current);
+      timerInterval.current = null;
+    }
   };
 
   const resumeSession = async () => {
@@ -275,6 +357,7 @@ export const [AudioProvider, useAudio] = createContextHook(() => {
       const endTime = Date.now() + session.durationMinutes * 60 * 1000;
       setSessionEndTime(endTime);
       setSession(prev => prev ? { ...prev, endTime } : null);
+      startNotificationUpdates(endTime);
     }
     setPausedTimeRemaining(null);
   };
@@ -293,6 +376,10 @@ export const [AudioProvider, useAudio] = createContextHook(() => {
     setIsPaused(false);
     setPausedTimeRemaining(null);
     setSessionEndTime(null);
+
+    // Cleanup background features
+    KeepAwake.deactivateKeepAwake();
+    stopNotificationUpdates();
   }, [sound, keepAliveSound]);
 
   useEffect(() => {
